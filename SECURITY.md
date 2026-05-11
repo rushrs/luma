@@ -23,4 +23,4 @@ Expected boundaries:
 
 ## Dependency checks
 
-The CI workflow runs Rust formatting, clippy, tests, and a RustSec audit. Contributors should run the same locally before release.
+The CI workflow runs Rust formatting, clippy, tests, RustSec audit, and `cargo deny` dependency policy checks. Contributors should run the same locally before release.

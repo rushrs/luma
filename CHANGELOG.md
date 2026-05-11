@@ -13,3 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Built-in plugins for Nvim, Ghostty, tmux, K9s, and Pi.
 - Generic-safe tmux palette mode plus opt-in statusline mode.
 - Built-in Nightfox-family palettes for generated themes.
+- CI supply-chain checks with pinned GitHub Actions, `cargo audit`, and `cargo deny`.
+
+### Changed
+
+- Library crate entrypoints are now thin module/export maps; implementations live in named modules.

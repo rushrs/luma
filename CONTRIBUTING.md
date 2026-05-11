@@ -6,8 +6,10 @@ Thanks for considering a contribution to Luma.
 
 ```bash
 cargo fmt
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
+cargo audit --deny warnings
+cargo deny check all
 ```
 
 For local install testing without touching real app config:
@@ -24,6 +26,7 @@ HOME="$TMP_HOME" LUMA_NO_LIVE=1 cargo run -p lumactl -- install
 - Prefer generic-safe defaults. Opinionated integrations should be opt-in.
 - Do not add personal paths, private service names, or machine-specific assumptions to default behavior.
 - Do not log or commit secrets.
+- Keep `lib.rs` files as small module/export maps; implementation code should live in named modules such as `nvim.rs`, `k9s.rs`, or `macos.rs`.
 
 ## Adding a plugin
 
@@ -36,7 +39,9 @@ HOME="$TMP_HOME" LUMA_NO_LIVE=1 cargo run -p lumactl -- install
 ## Pull request checklist
 
 - [ ] `cargo fmt --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test`
+- [ ] `cargo clippy --locked --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --locked --all-features`
+- [ ] `cargo audit --deny warnings`
+- [ ] `cargo deny check all`
 - [ ] no personal paths or secrets in the diff
 - [ ] README/config docs updated if behavior changed
