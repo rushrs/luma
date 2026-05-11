@@ -50,7 +50,57 @@ LUMA_LIGHT=dawnfox
 LUMA_DARK=carbonfox
 LUMA_PLUGINS=nvim,ghostty,tmux,k9s,pi
 LUMA_TMUX_MODE=palette
+# Optional. Defaults to ~/.config/luma/themes.
+LUMA_THEME_DIR=~/.config/luma/themes
 ```
+
+Custom palettes are JSON files named by theme key, for example:
+
+```text
+~/.config/luma/themes/my-dark.json
+```
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/rushrs/luma/main/schemas/palette.schema.json",
+  "name": "My Dark",
+  "light": false,
+  "colors": {
+    "bg0": "#101014",
+    "bg1": "#181820",
+    "bg2": "#222230",
+    "bg3": "#303040",
+    "bg4": "#4a4a60",
+    "fg0": "#fbfbff",
+    "fg1": "#eeeeff",
+    "fg2": "#c8c8d8",
+    "fg3": "#88889a",
+    "sel0": "#2c2c3a",
+    "sel1": "#46465a",
+    "comment": "#77778a",
+    "black": "#202028",
+    "red": "#f07178",
+    "green": "#c3e88d",
+    "yellow": "#ffcb6b",
+    "blue": "#82aaff",
+    "magenta": "#c792ea",
+    "cyan": "#89ddff",
+    "white": "#ffffff",
+    "orange": "#f78c6c",
+    "pink": "#ff9cac"
+  }
+}
+```
+
+Select and validate it:
+
+```bash
+lumactl theme validate ~/.config/luma/themes/my-dark.json
+lumactl config --dark my-dark
+lumactl palettes
+```
+
+Custom palettes override built-ins with the same key. Built-ins remain the fallback when a requested key is unknown.
 
 Tmux modes:
 
@@ -75,7 +125,7 @@ LUMA_DARK_GHOSTTY=Carbonfox
 The light/dark scheme keys are selected in config. Built-in palette color values are defined in Rust in:
 
 ```text
-crates/luma-core/src/lib.rs  # PALETTES
+crates/luma-core/src/core.rs  # PALETTES and custom palette loader
 ```
 
 Plugins that need concrete generated colors, like K9s and Pi, use those palette definitions. Plugins that natively support theme names, like Nvim and Ghostty, use the configured scheme names/display names directly.
@@ -92,6 +142,9 @@ lumactl config --show
 lumactl config --light dayfox --dark nightfox --plugins nvim,ghostty,tmux,k9s
 lumactl config --tmux-mode palette
 lumactl config --tmux-mode statusline
+lumactl config --theme-dir ~/.config/luma/themes
+lumactl theme validate
+lumactl theme validate ~/.config/luma/themes/my-dark.json
 lumactl uninstall
 lumactl plugins
 lumactl palettes

@@ -68,8 +68,8 @@ fn select_pi_theme(ctx: &SyncContext) -> Result<()> {
 }
 
 fn render_pi_theme(p: &Palette) -> Value {
-    let tool_success_bg = if p.light { p.sel0 } else { p.bg2 };
-    let tool_error_bg = if p.light { p.bg0 } else { p.bg2 };
+    let tool_success_bg = if p.light { &p.sel0 } else { &p.bg2 };
+    let tool_error_bg = if p.light { &p.bg0 } else { &p.bg2 };
     json!({
         "$schema": "https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
         "name": THEME_NAME,

@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rushrs/luma/main/schemas/palette.schema.json",
+  "$comment": "SPDX-License-Identifier: MIT",
+  "title": "Luma palette",
+  "description": "Custom palette definition consumed by lumactl generated-theme plugins.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Optional theme key. If present, it must match the JSON filename stem after lowercasing."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "light": {
+      "type": "boolean",
+      "description": "Whether this palette should use light-mode derived UI accents. If omitted, lumactl infers it from the selected OS mode."
+    },
+    "colors": {
+      "$ref": "#/$defs/colors"
+    },
+    "bg0": { "$ref": "#/$defs/hexColor" },
+    "bg1": { "$ref": "#/$defs/hexColor" },
+    "bg2": { "$ref": "#/$defs/hexColor" },
+    "bg3": { "$ref": "#/$defs/hexColor" },
+    "bg4": { "$ref": "#/$defs/hexColor" },
+    "fg0": { "$ref": "#/$defs/hexColor" },
+    "fg1": { "$ref": "#/$defs/hexColor" },
+    "fg2": { "$ref": "#/$defs/hexColor" },
+    "fg3": { "$ref": "#/$defs/hexColor" },
+    "sel0": { "$ref": "#/$defs/hexColor" },
+    "sel1": { "$ref": "#/$defs/hexColor" },
+    "comment": { "$ref": "#/$defs/hexColor" },
+    "black": { "$ref": "#/$defs/hexColor" },
+    "red": { "$ref": "#/$defs/hexColor" },
+    "green": { "$ref": "#/$defs/hexColor" },
+    "yellow": { "$ref": "#/$defs/hexColor" },
+    "blue": { "$ref": "#/$defs/hexColor" },
+    "magenta": { "$ref": "#/$defs/hexColor" },
+    "cyan": { "$ref": "#/$defs/hexColor" },
+    "white": { "$ref": "#/$defs/hexColor" },
+    "orange": { "$ref": "#/$defs/hexColor" },
+    "pink": { "$ref": "#/$defs/hexColor" }
+  },
+  "oneOf": [
+    {
+      "required": ["colors"]
+    },
+    {
+      "required": [
+        "bg0",
+        "bg1",
+        "bg2",
+        "bg3",
+        "bg4",
+        "fg0",
+        "fg1",
+        "fg2",
+        "fg3",
+        "sel0",
+        "sel1",
+        "comment",
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "orange",
+        "pink"
+      ]
+    }
+  ],
+  "$defs": {
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bg0",
+        "bg1",
+        "bg2",
+        "bg3",
+        "bg4",
+        "fg0",
+        "fg1",
+        "fg2",
+        "fg3",
+        "sel0",
+        "sel1",
+        "comment",
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "orange",
+        "pink"
+      ],
+      "properties": {
+        "bg0": { "$ref": "#/$defs/hexColor" },
+        "bg1": { "$ref": "#/$defs/hexColor" },
+        "bg2": { "$ref": "#/$defs/hexColor" },
+        "bg3": { "$ref": "#/$defs/hexColor" },
+        "bg4": { "$ref": "#/$defs/hexColor" },
+        "fg0": { "$ref": "#/$defs/hexColor" },
+        "fg1": { "$ref": "#/$defs/hexColor" },
+        "fg2": { "$ref": "#/$defs/hexColor" },
+        "fg3": { "$ref": "#/$defs/hexColor" },
+        "sel0": { "$ref": "#/$defs/hexColor" },
+        "sel1": { "$ref": "#/$defs/hexColor" },
+        "comment": { "$ref": "#/$defs/hexColor" },
+        "black": { "$ref": "#/$defs/hexColor" },
+        "red": { "$ref": "#/$defs/hexColor" },
+        "green": { "$ref": "#/$defs/hexColor" },
+        "yellow": { "$ref": "#/$defs/hexColor" },
+        "blue": { "$ref": "#/$defs/hexColor" },
+        "magenta": { "$ref": "#/$defs/hexColor" },
+        "cyan": { "$ref": "#/$defs/hexColor" },
+        "white": { "$ref": "#/$defs/hexColor" },
+        "orange": { "$ref": "#/$defs/hexColor" },
+        "pink": { "$ref": "#/$defs/hexColor" }
+      }
+    }
+  }
+}

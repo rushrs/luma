@@ -37,6 +37,11 @@ jobs:
           cargo build --locked --release
           TMP_HOME="$(mktemp -d)"
           HOME="$TMP_HOME" LUMA_NO_LIVE=1 ./target/release/lumactl sync
+          mkdir -p "$TMP_HOME/.config/luma/themes"
+          cp examples/themes/example-dark.json "$TMP_HOME/.config/luma/themes/ci-theme.json"
+          HOME="$TMP_HOME" LUMA_NO_LIVE=1 ./target/release/lumactl config --light ci-theme --dark ci-theme --plugins tmux,k9s,pi --theme-dir "$TMP_HOME/.config/luma/themes"
+          HOME="$TMP_HOME" LUMA_NO_LIVE=1 ./target/release/lumactl theme validate
+          HOME="$TMP_HOME" LUMA_NO_LIVE=1 ./target/release/lumactl palettes | grep ci-theme
 
   supply-chain:
     runs-on: ubuntu-latest

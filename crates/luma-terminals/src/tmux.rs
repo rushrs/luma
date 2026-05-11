@@ -339,27 +339,27 @@ struct TmuxColors<'a> {
 fn tmux_colors(p: &Palette) -> TmuxColors<'_> {
     if p.light {
         TmuxColors {
-            bar_bg: p.white,
-            panel_bg: p.bg1,
-            fg: p.fg1,
-            muted: p.fg2,
-            session_bg: p.blue,
-            active_bg: p.yellow,
-            text_dark: p.bg1,
-            border: p.bg4,
-            waiting: p.red,
+            bar_bg: &p.white,
+            panel_bg: &p.bg1,
+            fg: &p.fg1,
+            muted: &p.fg2,
+            session_bg: &p.blue,
+            active_bg: &p.yellow,
+            text_dark: &p.bg1,
+            border: &p.bg4,
+            waiting: &p.red,
         }
     } else {
         TmuxColors {
-            bar_bg: p.bg1,
-            panel_bg: p.bg2,
-            fg: p.fg1,
-            muted: p.fg2,
-            session_bg: p.blue,
-            active_bg: p.magenta,
-            text_dark: p.bg1,
-            border: p.bg3,
-            waiting: p.red,
+            bar_bg: &p.bg1,
+            panel_bg: &p.bg2,
+            fg: &p.fg1,
+            muted: &p.fg2,
+            session_bg: &p.blue,
+            active_bg: &p.magenta,
+            text_dark: &p.bg1,
+            border: &p.bg3,
+            waiting: &p.red,
         }
     }
 }

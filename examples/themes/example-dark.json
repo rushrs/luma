@@ -1,0 +1,30 @@
+{
+  "$schema": "../../schemas/palette.schema.json",
+  "$comment": "SPDX-License-Identifier: MIT",
+  "name": "Example Dark",
+  "light": false,
+  "colors": {
+    "bg0": "#101014",
+    "bg1": "#181820",
+    "bg2": "#222230",
+    "bg3": "#303040",
+    "bg4": "#4a4a60",
+    "fg0": "#fbfbff",
+    "fg1": "#eeeeff",
+    "fg2": "#c8c8d8",
+    "fg3": "#88889a",
+    "sel0": "#2c2c3a",
+    "sel1": "#46465a",
+    "comment": "#77778a",
+    "black": "#202028",
+    "red": "#f07178",
+    "green": "#c3e88d",
+    "yellow": "#ffcb6b",
+    "blue": "#82aaff",
+    "magenta": "#c792ea",
+    "cyan": "#89ddff",
+    "white": "#ffffff",
+    "orange": "#f78c6c",
+    "pink": "#ff9cac"
+  }
+}

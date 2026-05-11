@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: MIT
-use std::{env, fs, path::Path, process::Command, sync::mpsc, thread, time::Duration};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use luma_core::{
     AppId, AppearanceBackend, DesiredMode, LAUNCH_LABEL, LumaPlugin, SyncContext, THEME_NAME,
-    ThemeConfig, TmuxMode, config_file, parse_plugin_list, print_theme_config, read_theme_config,
-    supported_palette_names, write_theme_config,
+    ThemeConfig, TmuxMode, available_palette_names, config_file, custom_palettes,
+    parse_plugin_list, print_theme_config, read_theme_config, theme_dir_for_config,
+    validate_theme_file, write_theme_config,
 };
 use luma_editors::{Nvim, install_nvim_integration};
 use luma_harnesses::{Pi, pi_settings_file, pi_theme_file};
@@ -47,7 +55,9 @@ enum Commands {
     Status,
     /// Show or update theme/plugin choices.
     Config(ConfigArgs),
-    /// List built-in palettes used by generated-theme plugins.
+    /// Validate custom JSON palette definitions.
+    Theme(ThemeArgs),
+    /// List built-in and custom palettes used by generated-theme plugins.
     Palettes,
     /// List built-in plugins that can be enabled in LUMA_PLUGINS.
     Plugins,
@@ -78,6 +88,10 @@ struct InstallArgs {
     /// Tmux integration depth: palette, statusline, or off.
     #[arg(long = "tmux-mode", value_enum)]
     tmux_mode: Option<TmuxModeArg>,
+
+    /// Directory containing custom JSON palette definitions.
+    #[arg(long = "theme-dir")]
+    theme_dir: Option<PathBuf>,
 
     /// Do not install the Neovim module / polish.lua require.
     #[arg(long)]
@@ -151,9 +165,42 @@ struct ConfigArgs {
     #[arg(long = "tmux-mode", value_enum)]
     tmux_mode: Option<TmuxModeArg>,
 
+    /// Directory containing custom JSON palette definitions.
+    #[arg(long = "theme-dir")]
+    theme_dir: Option<PathBuf>,
+
     /// Print effective config after applying updates.
     #[arg(long)]
     show: bool,
+}
+
+#[derive(Debug)]
+struct ConfigUpdate {
+    light: Option<String>,
+    dark: Option<String>,
+    light_ghostty: Option<String>,
+    dark_ghostty: Option<String>,
+    plugins: Option<String>,
+    tmux_mode: Option<TmuxModeArg>,
+    theme_dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct ThemeArgs {
+    #[command(subcommand)]
+    command: ThemeCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ThemeCommand {
+    /// Validate one custom palette file or every palette in the active theme dir.
+    Validate(ValidateThemeArgs),
+}
+
+#[derive(Args, Debug)]
+struct ValidateThemeArgs {
+    /// Optional JSON palette file. Defaults to all palettes in the active theme dir.
+    path: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -169,8 +216,10 @@ fn main() -> Result<()> {
         Commands::Uninstall => uninstall(&os),
         Commands::Status => status(&os),
         Commands::Config(args) => config_command(&os, args),
+        Commands::Theme(args) => theme_command(args),
         Commands::Palettes => {
-            println!("{}", supported_palette_names());
+            let cfg = read_theme_config()?;
+            println!("{}", available_palette_names(&cfg)?);
             Ok(())
         }
         Commands::Plugins => {
@@ -181,22 +230,35 @@ fn main() -> Result<()> {
 }
 
 fn install(os: &impl AppearanceBackend, args: InstallArgs) -> Result<()> {
+    let InstallArgs {
+        light,
+        dark,
+        light_ghostty,
+        dark_ghostty,
+        plugins,
+        tmux_mode,
+        theme_dir,
+        no_nvim,
+    } = args;
     let mut cfg = read_theme_config()?;
     let config_changed = apply_config_args(
         &mut cfg,
-        args.light,
-        args.dark,
-        args.light_ghostty,
-        args.dark_ghostty,
-        args.plugins,
-        args.tmux_mode,
+        ConfigUpdate {
+            light,
+            dark,
+            light_ghostty,
+            dark_ghostty,
+            plugins,
+            tmux_mode,
+            theme_dir,
+        },
     );
     if config_changed || !config_file()?.exists() {
         write_theme_config(&cfg)?;
     }
 
     luma_os_macos::install_binary(&env::current_exe()?)?;
-    if !args.no_nvim && cfg.plugins.iter().any(|plugin| plugin == "nvim") {
+    if !no_nvim && cfg.plugins.iter().any(|plugin| plugin == "nvim") {
         install_nvim_integration(os)?;
     }
     write_launch_agent()?;
@@ -458,6 +520,10 @@ fn status(os: &impl AppearanceBackend) -> Result<()> {
     println!("dark-theme: {}", ctx.config.dark);
     println!("plugins: {}", ctx.config.plugins.join(","));
     println!("tmux-mode: {}", ctx.config.tmux_mode.as_str());
+    println!(
+        "theme-dir: {}",
+        theme_dir_for_config(&ctx.config)?.display()
+    );
     println!("config: {}", config_file()?.display());
     println!("tmux-theme: {}", tmux_theme_file(ctx.platform)?.display());
     println!(
@@ -494,16 +560,46 @@ fn status(os: &impl AppearanceBackend) -> Result<()> {
     Ok(())
 }
 
+fn theme_command(args: ThemeArgs) -> Result<()> {
+    match args.command {
+        ThemeCommand::Validate(args) => validate_theme_command(args),
+    }
+}
+
+fn validate_theme_command(args: ValidateThemeArgs) -> Result<()> {
+    if let Some(path) = args.path {
+        let palette = validate_theme_file(&path)?;
+        println!("valid: {} ({})", palette.key, path.display());
+        return Ok(());
+    }
+
+    let cfg = read_theme_config()?;
+    let theme_dir = theme_dir_for_config(&cfg)?;
+    let palettes = custom_palettes(&cfg)?;
+    println!(
+        "valid: {} custom palette(s) in {}",
+        palettes.len(),
+        theme_dir.display()
+    );
+    for palette in palettes {
+        println!("{}", palette.key);
+    }
+    Ok(())
+}
+
 fn config_command(os: &impl AppearanceBackend, args: ConfigArgs) -> Result<()> {
     let mut cfg = read_theme_config()?;
     let changed = apply_config_args(
         &mut cfg,
-        args.light,
-        args.dark,
-        args.light_ghostty,
-        args.dark_ghostty,
-        args.plugins,
-        args.tmux_mode,
+        ConfigUpdate {
+            light: args.light,
+            dark: args.dark,
+            light_ghostty: args.light_ghostty,
+            dark_ghostty: args.dark_ghostty,
+            plugins: args.plugins,
+            tmux_mode: args.tmux_mode,
+            theme_dir: args.theme_dir,
+        },
     );
     if changed {
         write_theme_config(&cfg)?;
@@ -515,38 +611,34 @@ fn config_command(os: &impl AppearanceBackend, args: ConfigArgs) -> Result<()> {
     Ok(())
 }
 
-fn apply_config_args(
-    cfg: &mut ThemeConfig,
-    light: Option<String>,
-    dark: Option<String>,
-    light_ghostty: Option<String>,
-    dark_ghostty: Option<String>,
-    plugins: Option<String>,
-    tmux_mode: Option<TmuxModeArg>,
-) -> bool {
+fn apply_config_args(cfg: &mut ThemeConfig, update: ConfigUpdate) -> bool {
     let mut changed = false;
-    if let Some(light) = light {
+    if let Some(light) = update.light {
         cfg.light = luma_core::normalize_theme_name(&light);
         changed = true;
     }
-    if let Some(dark) = dark {
+    if let Some(dark) = update.dark {
         cfg.dark = luma_core::normalize_theme_name(&dark);
         changed = true;
     }
-    if let Some(light_ghostty) = light_ghostty {
+    if let Some(light_ghostty) = update.light_ghostty {
         cfg.light_ghostty = Some(light_ghostty);
         changed = true;
     }
-    if let Some(dark_ghostty) = dark_ghostty {
+    if let Some(dark_ghostty) = update.dark_ghostty {
         cfg.dark_ghostty = Some(dark_ghostty);
         changed = true;
     }
-    if let Some(plugins) = plugins {
+    if let Some(plugins) = update.plugins {
         cfg.plugins = parse_plugin_list(&plugins);
         changed = true;
     }
-    if let Some(tmux_mode) = tmux_mode {
+    if let Some(tmux_mode) = update.tmux_mode {
         cfg.tmux_mode = tmux_mode.into();
+        changed = true;
+    }
+    if let Some(theme_dir) = update.theme_dir {
+        cfg.theme_dir = Some(luma_core::expand_home_path(&theme_dir.to_string_lossy()));
         changed = true;
     }
     changed
