@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/luma-core",
+  "crates/luma-editors",
+  "crates/luma-harnesses",
+  "crates/luma-os-macos",
+  "crates/luma-terminals",
+  "crates/luma-tui",
+  "crates/lumactl",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde_json = "1.0"
+luma-core = { path = "crates/luma-core" }
+luma-editors = { path = "crates/luma-editors" }
+luma-harnesses = { path = "crates/luma-harnesses" }
+luma-os-macos = { path = "crates/luma-os-macos" }
+luma-terminals = { path = "crates/luma-terminals" }
+luma-tui = { path = "crates/luma-tui" }
