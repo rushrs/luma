@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: MIT
 local mode_file = vim.fn.expand("~/.cache/luma/mode")
 local theme_file = vim.fn.expand("~/.cache/luma/nvim-colorscheme")
 local mode_dir = vim.fn.fnamemodify(mode_file, ":h")

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::{
     ffi::{CString, c_char, c_void},
     fs,

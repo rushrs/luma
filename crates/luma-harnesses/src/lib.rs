@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #![recursion_limit = "256"]
 
 mod pi;

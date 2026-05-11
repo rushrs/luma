@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use std::{env, fs, path::Path, process::Command, sync::mpsc, thread, time::Duration};
 
 use anyhow::{Result, bail};

@@ -135,3 +135,7 @@ The key interfaces are in `luma-core`:
 - marker traits: `Terminal`, `TerminalEditor`, `TerminalUi`, `AgenticHarness`
 
 Plugins are OS-agnostic by default: they render app config and ask `ctx.platform` for paths. Linux and Windows should be added as new `luma-os-*` backend crates that implement `AppearanceBackend + Platform`, rather than splitting every plugin per OS.
+
+## License
+
+Luma is licensed under the MIT License. See [LICENSE](LICENSE).

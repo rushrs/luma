@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 mod ghostty;
 mod tmux;
 
