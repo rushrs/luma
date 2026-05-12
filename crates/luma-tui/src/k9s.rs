@@ -3,7 +3,8 @@ use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::Result;
 use luma_core::{
-    AppId, LumaPlugin, Palette, Platform, SyncContext, THEME_NAME, TerminalUi, write_if_changed,
+    AppId, LumaPlugin, Palette, Platform, SyncContext, THEME_NAME, TerminalUi,
+    primary_app_config_file, read_optional_text, write_if_changed,
 };
 
 #[derive(Debug, Default)]
@@ -23,19 +24,15 @@ impl LumaPlugin for K9s {
 impl TerminalUi for K9s {}
 
 pub fn k9s_config_file(platform: &dyn Platform) -> Result<PathBuf> {
-    Ok(platform
-        .app_config_files(AppId::K9s, Path::new("config.yaml"))?
-        .into_iter()
-        .next()
-        .expect("k9s config path exists"))
+    primary_app_config_file(platform, AppId::K9s, Path::new("config.yaml"))
 }
 
 pub fn k9s_skin_file(platform: &dyn Platform, name: &str) -> Result<PathBuf> {
-    Ok(platform
-        .app_config_files(AppId::K9s, Path::new(&format!("skins/{name}.yaml")))?
-        .into_iter()
-        .next()
-        .expect("k9s skin path exists"))
+    primary_app_config_file(
+        platform,
+        AppId::K9s,
+        Path::new(&format!("skins/{name}.yaml")),
+    )
 }
 
 fn ensure_k9s_config(ctx: &SyncContext) -> Result<()> {
@@ -43,7 +40,7 @@ fn ensure_k9s_config(ctx: &SyncContext) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let original = fs::read_to_string(&path).unwrap_or_else(|_| "k9s:\n".to_string());
+    let original = read_optional_text(&path)?.unwrap_or_else(|| "k9s:\n".to_string());
     let mut lines: Vec<String> = original.lines().map(ToOwned::to_owned).collect();
     if lines.is_empty() {
         lines.push("k9s:".to_string());
@@ -266,4 +263,99 @@ k9s:
         orange = p.orange,
         pink = p.pink,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luma_core::{Mode, OsKind, ThemeConfig};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Result<Self> {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before UNIX_EPOCH")
+                .as_nanos();
+            let path = std::env::temp_dir()
+                .join(format!("luma-tui-{name}-{}-{unique}", std::process::id()));
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct FakePlatform {
+        root: PathBuf,
+    }
+
+    impl Platform for FakePlatform {
+        fn os_kind(&self) -> OsKind {
+            OsKind::Unknown
+        }
+
+        fn home_dir(&self) -> Result<PathBuf> {
+            Ok(self.root.clone())
+        }
+
+        fn app_config_files(&self, app: AppId, relative: &Path) -> Result<Vec<PathBuf>> {
+            Ok(vec![self.root.join(format!("{app:?}")).join(relative)])
+        }
+
+        fn app_cache_file(&self, app: AppId, relative: &Path) -> Result<PathBuf> {
+            Ok(self
+                .root
+                .join("cache")
+                .join(format!("{app:?}"))
+                .join(relative))
+        }
+    }
+
+    #[test]
+    fn k9s_config_updates_ui_without_dropping_other_sections() -> Result<()> {
+        let temp = TempDir::new("config-update")?;
+        let platform = FakePlatform {
+            root: temp.0.clone(),
+        };
+        let config_path = k9s_config_file(&platform)?;
+        fs::create_dir_all(config_path.parent().expect("config path has a parent"))?;
+        fs::write(
+            &config_path,
+            "k9s:\n  ui:\n    skin: old\n    reactive: false\n  logger:\n    tail: 10\n",
+        )?;
+        let ctx = SyncContext::new(Mode::Light, ThemeConfig::default(), &platform)?;
+
+        ensure_k9s_config(&ctx)?;
+
+        let next = fs::read_to_string(config_path)?;
+        assert!(next.contains("    skin: luma"));
+        assert!(next.contains("    reactive: true"));
+        assert!(next.contains("  logger:\n    tail: 10"));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_k9s_config_utf8_is_not_overwritten() -> Result<()> {
+        let temp = TempDir::new("invalid-utf8")?;
+        let platform = FakePlatform {
+            root: temp.0.clone(),
+        };
+        let config_path = k9s_config_file(&platform)?;
+        fs::create_dir_all(config_path.parent().expect("config path has a parent"))?;
+        fs::write(&config_path, [0xff, 0xfe])?;
+        let ctx = SyncContext::new(Mode::Light, ThemeConfig::default(), &platform)?;
+
+        let err = ensure_k9s_config(&ctx).expect_err("invalid UTF-8 should fail closed");
+
+        assert!(err.to_string().contains("failed to read"));
+        assert_eq!(fs::read(config_path)?, [0xff, 0xfe]);
+        Ok(())
+    }
 }

@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use luma_core::{
     AppId, AppearanceBackend, AppearanceCapabilities, DesiredMode, LAUNCH_LABEL, Mode, OsKind,
-    Platform, home_dir, local_bin_dir, write_if_changed,
+    Platform, home_dir, local_bin_dir, validate_relative_path, write_if_changed,
 };
 
 type Id = *mut c_void;
@@ -56,6 +56,7 @@ impl Platform for MacOs {
     }
 
     fn app_config_files(&self, app: AppId, relative: &Path) -> Result<Vec<PathBuf>> {
+        let relative = validate_relative_path(relative)?;
         let home = home_dir()?;
         let files = match app {
             AppId::Luma => vec![home.join(".config/luma").join(relative)],
@@ -74,6 +75,7 @@ impl Platform for MacOs {
     }
 
     fn app_cache_file(&self, app: AppId, relative: &Path) -> Result<PathBuf> {
+        let relative = validate_relative_path(relative)?;
         let home = home_dir()?;
         let base = match app {
             AppId::Luma => home.join(".cache/luma"),
@@ -114,6 +116,10 @@ pub fn run_appearance_notification_loop(sender: Sender<()>) -> Result<()> {
         .set(sender)
         .map_err(|_| anyhow!("appearance notification loop already initialized"))?;
 
+    // SAFETY: This block bridges to Objective-C/Foundation APIs. Class and
+    // selector lookups are checked for null before use, Objective-C strings are
+    // built from `CString`s that live for each message send, and the observer is
+    // intentionally kept alive for the lifetime of the run loop.
     unsafe {
         // Force Foundation to be linked/loaded before asking the Objective-C
         // runtime for Foundation classes by name.
@@ -127,6 +133,8 @@ pub fn run_appearance_notification_loop(sender: Sender<()>) -> Result<()> {
             bail!("failed to create LumaAppearanceObserver instance");
         }
 
+        // SAFETY: `defaultCenter` is a class method with Objective-C ABI
+        // equivalent to `(Class, Sel) -> id` for this message send.
         let default_center: unsafe extern "C" fn(Class, Sel) -> Id =
             std::mem::transmute(objc_msgSend as *const ());
         let center = default_center(center_cls, objc_sel("defaultCenter")?);
@@ -135,6 +143,8 @@ pub fn run_appearance_notification_loop(sender: Sender<()>) -> Result<()> {
         }
 
         let notification_name = ns_string(string_cls, APPEARANCE_NOTIFICATION)?;
+        // SAFETY: `addObserver:selector:name:object:` has the Objective-C ABI
+        // shape `(id, SEL, id, SEL, id, id) -> void`; the return value is ignored.
         let add_observer: unsafe extern "C" fn(Id, Sel, Id, Sel, Id, Id) =
             std::mem::transmute(objc_msgSend as *const ());
         add_observer(
@@ -154,18 +164,23 @@ pub fn run_appearance_notification_loop(sender: Sender<()>) -> Result<()> {
 
 fn appearance_observer_class() -> Result<Class> {
     let class_name = CString::new("LumaAppearanceObserver")?;
+    // SAFETY: `class_name` is a NUL-terminated CString; null return is checked.
     let existing = unsafe { objc_getClass(class_name.as_ptr()) };
     if !existing.is_null() {
         return Ok(existing);
     }
 
     let superclass = objc_class("NSObject")?;
+    // SAFETY: `superclass` is a valid Objective-C class from `objc_class`, and
+    // `class_name` is a stable NUL-terminated string for the duration of call.
     let cls = unsafe { objc_allocateClassPair(superclass, class_name.as_ptr(), 0) };
     if cls.is_null() {
         bail!("failed to allocate LumaAppearanceObserver class");
     }
 
     let types = CString::new("v@:@")?;
+    // SAFETY: `cls` is newly allocated, selector/type encoding match
+    // `appearance_objc_callback`, and all pointers are valid for this call.
     let added = unsafe {
         class_addMethod(
             cls,
@@ -177,12 +192,14 @@ fn appearance_observer_class() -> Result<Class> {
     if added == 0 {
         bail!("failed to add appearanceChanged: method");
     }
+    // SAFETY: `cls` was allocated by `objc_allocateClassPair` and not yet registered.
     unsafe { objc_registerClassPair(cls) };
     Ok(cls)
 }
 
 fn objc_class(name: &str) -> Result<Class> {
     let name = CString::new(name)?;
+    // SAFETY: `name` is a NUL-terminated CString; null return is checked.
     let cls = unsafe { objc_getClass(name.as_ptr()) };
     if cls.is_null() {
         bail!("Objective-C class not found: {}", name.to_string_lossy());
@@ -192,6 +209,7 @@ fn objc_class(name: &str) -> Result<Class> {
 
 fn objc_sel(name: &str) -> Result<Sel> {
     let name = CString::new(name)?;
+    // SAFETY: `name` is a NUL-terminated CString; null return is checked.
     let sel = unsafe { sel_registerName(name.as_ptr()) };
     if sel.is_null() {
         bail!("Objective-C selector not found: {}", name.to_string_lossy());
@@ -201,8 +219,12 @@ fn objc_sel(name: &str) -> Result<Sel> {
 
 fn ns_string(string_cls: Class, value: &str) -> Result<Id> {
     let value = CString::new(value)?;
+    // SAFETY: `stringWithUTF8String:` has ABI shape
+    // `(Class, Sel, *const c_char) -> id`; `value` stays alive for the send.
     let string_with_utf8: unsafe extern "C" fn(Class, Sel, *const c_char) -> Id =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    // SAFETY: `string_cls` is `NSString`, selector and C string pointer are valid
+    // for this Objective-C message send, and null return is checked below.
     let string = unsafe {
         string_with_utf8(
             string_cls,
@@ -289,6 +311,8 @@ pub fn launch_agent_file() -> Result<PathBuf> {
 }
 
 pub fn write_launch_agent() -> Result<()> {
+    let label = xml_escape(LAUNCH_LABEL);
+    let home = xml_escape(&home_dir()?.display().to_string());
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -312,8 +336,8 @@ pub fn write_launch_agent() -> Result<()> {
 </dict>
 </plist>
 "#,
-        label = LAUNCH_LABEL,
-        home = home_dir()?.display(),
+        label = label,
+        home = home,
     );
     write_if_changed(&launch_agent_file()?, &plist)
 }
@@ -366,14 +390,31 @@ pub fn install_binary(current_exe: &Path) -> Result<()> {
     fs::create_dir_all(&bin_dir)?;
     let dest = bin_dir.join("lumactl");
     if !same_file_best_effort(current_exe, &dest) {
-        fs::copy(current_exe, &dest).with_context(|| {
-            format!(
-                "failed to copy {} to {}",
-                current_exe.display(),
-                dest.display()
-            )
-        })?;
-        set_executable(&dest)?;
+        replace_binary(current_exe, &dest)?;
+    }
+    Ok(())
+}
+
+fn replace_binary(current_exe: &Path, dest: &Path) -> Result<()> {
+    let tmp = dest.with_file_name(format!(
+        ".lumactl.{}.tmp",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+
+    fs::copy(current_exe, &tmp).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            current_exe.display(),
+            tmp.display()
+        )
+    })?;
+    set_executable(&tmp)?;
+    if let Err(err) = fs::rename(&tmp, dest) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("failed to replace {}", dest.display()));
     }
     Ok(())
 }
@@ -404,5 +445,43 @@ fn command_ok(command: &mut Command, label: &str) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow!("{label} failed with status {status}"))
+    }
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_paths_reject_relative_escape_components_before_joining() {
+        let macos = MacOs;
+
+        assert!(
+            macos
+                .app_config_files(AppId::Nvim, Path::new("../outside"))
+                .is_err()
+        );
+        assert!(
+            macos
+                .app_cache_file(AppId::Luma, Path::new("/tmp/outside"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn xml_escape_escapes_plist_special_characters() {
+        assert_eq!(
+            xml_escape("/Users/a&b/<luma>\"'"),
+            "/Users/a&amp;b/&lt;luma&gt;&quot;&apos;"
+        );
     }
 }

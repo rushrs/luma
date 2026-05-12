@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MIT
-use std::{collections::BTreeSet, env, fs, path::Path, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    env, fs,
+    io::ErrorKind,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -452,6 +457,41 @@ pub trait Platform {
     fn app_cache_file(&self, app: AppId, relative: &Path) -> Result<PathBuf>;
 }
 
+pub fn primary_app_config_file(
+    platform: &dyn Platform,
+    app: AppId,
+    relative: &Path,
+) -> Result<PathBuf> {
+    let relative = validate_relative_path(relative)?;
+    platform
+        .app_config_files(app, relative)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            anyhow!(
+                "platform returned no config file for {app:?}/{}",
+                relative.display()
+            )
+        })
+}
+
+pub fn validate_relative_path(relative: &Path) -> Result<&Path> {
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return Err(anyhow!(
+            "path must be relative and must not contain parent components: {}",
+            relative.display()
+        ));
+    }
+    Ok(relative)
+}
+
 pub trait AppearanceBackend: Platform {
     fn name(&self) -> &'static str;
     fn capabilities(&self) -> AppearanceCapabilities;
@@ -488,11 +528,20 @@ pub fn palette_for(mode: Mode, requested_theme: &str) -> Palette {
 pub fn palette_for_config(mode: Mode, requested_theme: &str, cfg: &ThemeConfig) -> Result<Palette> {
     let normalized = normalize_theme_name(requested_theme);
 
-    if let Some(path) = custom_palette_file(cfg, &normalized)?
-        && path.exists()
-    {
-        return read_custom_palette_file(&path, &normalized, Some(mode))
-            .with_context(|| format!("failed to load custom Luma palette {}", path.display()));
+    if let Some(path) = custom_palette_file(cfg, &normalized)? {
+        match path.try_exists() {
+            Ok(true) => {
+                return read_custom_palette_file(&path, &normalized, Some(mode)).with_context(
+                    || format!("failed to load custom Luma palette {}", path.display()),
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("failed to inspect custom Luma palette {}", path.display())
+                });
+            }
+        }
     }
 
     if let Some(palette) = builtin_palette(&normalized) {
@@ -701,11 +750,9 @@ fn is_theme_key_safe(key: &str) -> bool {
 pub fn read_theme_config() -> Result<ThemeConfig> {
     let path = config_file()?;
     let mut cfg = ThemeConfig::default();
-    if !path.exists() {
+    let Some(text) = read_optional_text(&path)? else {
         return Ok(cfg);
-    }
-
-    let text = fs::read_to_string(&path)?;
+    };
     for raw_line in text.lines() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -864,16 +911,78 @@ pub fn parse_plugin_list(value: &str) -> Vec<String> {
     }
 }
 
+pub fn read_optional_text(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
 pub fn write_if_changed(path: &Path, content: &str) -> Result<()> {
-    if let Ok(existing) = fs::read_to_string(path)
-        && existing == content
-    {
-        return Ok(());
+    match fs::read(path) {
+        Ok(existing) if existing == content.as_bytes() => return Ok(()),
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", path.display()));
+        }
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    fs::write(path, content)?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            fs::write(path, content)
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            return Ok(());
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to stat {}", path.display()));
+        }
+    }
+    write_atomic(path, content.as_bytes())?;
+    Ok(())
+}
+
+fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| "luma".into());
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let tmp = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        unique
+    ));
+
+    fs::write(&tmp, content).with_context(|| format!("failed to write {}", tmp.display()))?;
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if let Err(err) = fs::set_permissions(&tmp, metadata.permissions()) {
+                let _ = fs::remove_file(&tmp);
+                return Err(err)
+                    .with_context(|| format!("failed to set permissions on {}", tmp.display()));
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(err).with_context(|| format!("failed to stat {}", path.display()));
+        }
+    }
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("failed to replace {}", path.display()));
+    }
     Ok(())
 }
 
@@ -1060,6 +1169,51 @@ mod tests {
         assert!(names.contains("carbonfox"));
         assert!(names.contains("my-dark"));
         fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn shell_quote_round_trips_single_quotes_for_config_parser() {
+        let value = "dawn fox's bright";
+        let quoted = shell_quote(value);
+
+        assert_eq!(parse_config_value(&quoted), value);
+    }
+
+    #[test]
+    fn validate_relative_path_rejects_escape_paths() {
+        assert!(validate_relative_path(Path::new("themes/luma.json")).is_ok());
+        assert!(validate_relative_path(Path::new("../outside")).is_err());
+        assert!(validate_relative_path(Path::new("themes/../../outside")).is_err());
+        assert!(validate_relative_path(Path::new("/tmp/outside")).is_err());
+    }
+
+    #[test]
+    fn write_if_changed_compares_bytes_without_rewriting() -> Result<()> {
+        let dir = temp_theme_dir("unchanged")?;
+        let path = dir.join("file");
+        fs::write(&path, b"same")?;
+        let before = fs::metadata(&path)?.modified()?;
+
+        write_if_changed(&path, "same")?;
+
+        let after = fs::metadata(&path)?.modified()?;
+        fs::remove_dir_all(dir)?;
+        assert_eq!(before, after);
+        Ok(())
+    }
+
+    #[test]
+    fn read_optional_text_only_defaults_missing_files() -> Result<()> {
+        let dir = temp_theme_dir("optional-read")?;
+        let missing = dir.join("missing");
+        assert!(read_optional_text(&missing)?.is_none());
+
+        let invalid = dir.join("invalid-utf8");
+        fs::write(&invalid, [0xff, 0xfe])?;
+        let err = read_optional_text(&invalid).expect_err("invalid UTF-8 should be an error");
+        fs::remove_dir_all(dir)?;
+        assert!(err.to_string().contains("failed to read"));
         Ok(())
     }
 }

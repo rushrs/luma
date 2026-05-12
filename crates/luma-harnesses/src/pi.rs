@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 use std::{fs, path::Path, path::PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use luma_core::{
-    AgenticHarness, AppId, LumaPlugin, Palette, Platform, SyncContext, THEME_NAME, write_if_changed,
+    AgenticHarness, AppId, LumaPlugin, Palette, Platform, SyncContext, THEME_NAME,
+    primary_app_config_file, read_optional_text, write_if_changed,
 };
 use serde_json::{Value, json};
 
@@ -25,19 +26,15 @@ impl LumaPlugin for Pi {
 impl AgenticHarness for Pi {}
 
 pub fn pi_theme_file(platform: &dyn Platform) -> Result<PathBuf> {
-    Ok(platform
-        .app_config_files(AppId::Pi, Path::new(&format!("themes/{THEME_NAME}.json")))?
-        .into_iter()
-        .next()
-        .expect("pi theme path exists"))
+    primary_app_config_file(
+        platform,
+        AppId::Pi,
+        Path::new(&format!("themes/{THEME_NAME}.json")),
+    )
 }
 
 pub fn pi_settings_file(platform: &dyn Platform) -> Result<PathBuf> {
-    Ok(platform
-        .app_config_files(AppId::Pi, Path::new("settings.json"))?
-        .into_iter()
-        .next()
-        .expect("pi settings path exists"))
+    primary_app_config_file(platform, AppId::Pi, Path::new("settings.json"))
 }
 
 fn write_pi_theme(ctx: &SyncContext) -> Result<()> {
@@ -55,10 +52,11 @@ fn select_pi_theme(ctx: &SyncContext) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut settings: Value = fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_else(|| json!({}));
+    let mut settings: Value = match read_optional_text(&path)? {
+        Some(text) => serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse Pi settings JSON at {}", path.display()))?,
+        None => json!({}),
+    };
     if !settings.is_object() {
         settings = json!({});
     }
@@ -154,4 +152,97 @@ fn render_pi_theme(p: &Palette) -> Value {
             "infoBg": p.bg0
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luma_core::{Mode, OsKind, ThemeConfig};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Result<Self> {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock is before UNIX_EPOCH")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "luma-harnesses-{name}-{}-{unique}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct FakePlatform {
+        root: PathBuf,
+    }
+
+    impl Platform for FakePlatform {
+        fn os_kind(&self) -> OsKind {
+            OsKind::Unknown
+        }
+
+        fn home_dir(&self) -> Result<PathBuf> {
+            Ok(self.root.clone())
+        }
+
+        fn app_config_files(&self, app: AppId, relative: &Path) -> Result<Vec<PathBuf>> {
+            Ok(vec![self.root.join(format!("{app:?}")).join(relative)])
+        }
+
+        fn app_cache_file(&self, app: AppId, relative: &Path) -> Result<PathBuf> {
+            Ok(self
+                .root
+                .join("cache")
+                .join(format!("{app:?}"))
+                .join(relative))
+        }
+    }
+
+    #[test]
+    fn invalid_pi_settings_json_is_not_overwritten() -> Result<()> {
+        let temp = TempDir::new("invalid-json")?;
+        let platform = FakePlatform {
+            root: temp.0.clone(),
+        };
+        let settings_path = pi_settings_file(&platform)?;
+        fs::create_dir_all(settings_path.parent().expect("settings path has a parent"))?;
+        fs::write(&settings_path, "{not valid json")?;
+        let ctx = SyncContext::new(Mode::Dark, ThemeConfig::default(), &platform)?;
+
+        let err = select_pi_theme(&ctx).expect_err("invalid JSON should fail closed");
+
+        assert!(err.to_string().contains("failed to parse Pi settings JSON"));
+        assert_eq!(fs::read_to_string(settings_path)?, "{not valid json");
+        Ok(())
+    }
+
+    #[test]
+    fn pi_settings_object_gets_theme_selected() -> Result<()> {
+        let temp = TempDir::new("select-theme")?;
+        let platform = FakePlatform {
+            root: temp.0.clone(),
+        };
+        let settings_path = pi_settings_file(&platform)?;
+        fs::create_dir_all(settings_path.parent().expect("settings path has a parent"))?;
+        fs::write(&settings_path, r#"{"other":true}"#)?;
+        let ctx = SyncContext::new(Mode::Dark, ThemeConfig::default(), &platform)?;
+
+        select_pi_theme(&ctx)?;
+
+        let settings: Value = serde_json::from_str(&fs::read_to_string(settings_path)?)?;
+        assert_eq!(settings["theme"], json!(THEME_NAME));
+        assert_eq!(settings["other"], json!(true));
+        Ok(())
+    }
 }

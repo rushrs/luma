@@ -8,13 +8,14 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use luma_core::{
     AppId, AppearanceBackend, DesiredMode, LAUNCH_LABEL, LumaPlugin, SyncContext, THEME_NAME,
     ThemeConfig, TmuxMode, available_palette_names, config_file, custom_palettes,
-    parse_plugin_list, print_theme_config, read_theme_config, theme_dir_for_config,
-    validate_theme_file, write_theme_config,
+    parse_plugin_list, primary_app_config_file, print_theme_config, read_optional_text,
+    read_theme_config, theme_dir_for_config, validate_theme_file, write_if_changed,
+    write_theme_config,
 };
 use luma_editors::{Nvim, install_nvim_integration};
 use luma_harnesses::{Pi, pi_settings_file, pi_theme_file};
@@ -290,18 +291,10 @@ fn uninstall(os: &impl AppearanceBackend) -> Result<()> {
 }
 
 fn remove_nvim_integration(platform: &dyn luma_core::Platform) -> Result<()> {
-    let luma_lua = platform
-        .app_config_files(AppId::Nvim, Path::new("lua/luma.lua"))?
-        .into_iter()
-        .next()
-        .expect("nvim luma.lua path exists");
+    let luma_lua = primary_app_config_file(platform, AppId::Nvim, Path::new("lua/luma.lua"))?;
     remove_file_if_exists(&luma_lua)?;
 
-    let polish = platform
-        .app_config_files(AppId::Nvim, Path::new("lua/polish.lua"))?
-        .into_iter()
-        .next()
-        .expect("nvim polish path exists");
+    let polish = primary_app_config_file(platform, AppId::Nvim, Path::new("lua/polish.lua"))?;
     remove_lines_if_exists(&polish, |line| {
         line.trim() == "pcall(require, \"luma\")"
             || line.trim() == "-- macOS light/dark theme sync. Installed by Luma."
@@ -323,7 +316,7 @@ fn remove_ghostty_integration(platform: &dyn luma_core::Platform) -> Result<()> 
 fn remove_tmux_integration(platform: &dyn luma_core::Platform) -> Result<()> {
     remove_file_if_exists(&tmux_theme_file(platform)?)?;
     let config = tmux_config_file(platform)?;
-    if let Ok(text) = fs::read_to_string(&config) {
+    if let Some(text) = read_optional_text(&config)? {
         let next = remove_marked_block(&text, "# >>> luma", "# <<< luma");
         if next != text {
             write_text_or_remove(&config, &next)?;
@@ -336,7 +329,7 @@ fn remove_k9s_integration(platform: &dyn luma_core::Platform) -> Result<()> {
     remove_file_if_exists(&k9s_skin_file(platform, THEME_NAME)?)?;
     let config = k9s_config_file(platform)?;
     remove_lines_if_exists(&config, |line| line.trim() == "skin: luma")?;
-    if let Ok(text) = fs::read_to_string(&config)
+    if let Some(text) = read_optional_text(&config)?
         && text.trim() == "k9s:\n  ui:\n    reactive: true"
     {
         remove_file_if_exists(&config)?;
@@ -347,18 +340,21 @@ fn remove_k9s_integration(platform: &dyn luma_core::Platform) -> Result<()> {
 fn remove_pi_integration(platform: &dyn luma_core::Platform) -> Result<()> {
     remove_file_if_exists(&pi_theme_file(platform)?)?;
     let settings = pi_settings_file(platform)?;
-    if let Ok(text) = fs::read_to_string(&settings)
-        && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text)
-        && value.get("theme").and_then(|theme| theme.as_str()) == Some(THEME_NAME)
-        && let Some(object) = value.as_object_mut()
-    {
-        object.remove("theme");
-        let next = if object.is_empty() {
-            String::new()
-        } else {
-            serde_json::to_string_pretty(&value)? + "\n"
-        };
-        write_text_or_remove(&settings, &next)?;
+    if let Some(text) = read_optional_text(&settings)? {
+        let mut value = serde_json::from_str::<serde_json::Value>(&text).with_context(|| {
+            format!("failed to parse Pi settings JSON at {}", settings.display())
+        })?;
+        if value.get("theme").and_then(|theme| theme.as_str()) == Some(THEME_NAME)
+            && let Some(object) = value.as_object_mut()
+        {
+            object.remove("theme");
+            let next = if object.is_empty() {
+                String::new()
+            } else {
+                serde_json::to_string_pretty(&value)? + "\n"
+            };
+            write_text_or_remove(&settings, &next)?;
+        }
     }
     Ok(())
 }
@@ -380,7 +376,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 fn remove_lines_if_exists(path: &Path, should_remove: impl Fn(&str) -> bool) -> Result<()> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Some(text) = read_optional_text(path)? else {
         return Ok(());
     };
     let kept: Vec<&str> = text.lines().filter(|line| !should_remove(line)).collect();
@@ -421,7 +417,7 @@ fn write_text_or_remove(path: &Path, text: &str) -> Result<()> {
     if text.trim().is_empty() {
         remove_file_if_exists(path)
     } else {
-        fs::write(path, text)?;
+        write_if_changed(path, text)?;
         Ok(())
     }
 }
@@ -457,35 +453,27 @@ fn watch(_os: &impl AppearanceBackend) -> Result<()> {
     thread::spawn(move || {
         let os = MacOs;
         let mut last_mode = match sync_all(&os) {
-            Ok(ctx) => ctx.mode,
+            Ok(ctx) => Some(ctx.mode),
             Err(err) => {
-                eprintln!("lumactl: initial sync failed: {err}");
-                return;
+                eprintln!("lumactl: initial sync failed; will retry: {err}");
+                None
             }
         };
 
         loop {
             match rx.recv_timeout(poll) {
-                Ok(()) => {
-                    eprintln!("lumactl: native appearance notification");
-                    match os.current_mode() {
-                        Ok(mode) if mode != last_mode => match sync_all(&os) {
-                            Ok(ctx) => last_mode = ctx.mode,
-                            Err(err) => eprintln!("lumactl: sync failed: {err}"),
-                        },
-                        Ok(_) => {}
-                        Err(err) => eprintln!("lumactl: failed to read appearance: {err}"),
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => match os.current_mode() {
-                    Ok(mode) if mode != last_mode => match sync_all(&os) {
-                        Ok(ctx) => last_mode = ctx.mode,
-                        Err(err) => eprintln!("lumactl: sync failed: {err}"),
-                    },
-                    Ok(_) => {}
-                    Err(err) => eprintln!("lumactl: failed to read appearance: {err}"),
-                },
+                Ok(()) => eprintln!("lumactl: native appearance notification"),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+
+            match os.current_mode() {
+                Ok(mode) if last_mode != Some(mode) => match sync_all(&os) {
+                    Ok(ctx) => last_mode = Some(ctx.mode),
+                    Err(err) => eprintln!("lumactl: sync failed: {err}"),
+                },
+                Ok(_) => {}
+                Err(err) => eprintln!("lumactl: failed to read appearance: {err}"),
             }
         }
     });
@@ -664,4 +652,45 @@ fn selected_plugins(names: &[String]) -> Result<Vec<Box<dyn LumaPlugin>>> {
         }
     }
     Ok(plugins)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_plugins_rejects_unknown_plugins() {
+        let err = match selected_plugins(&["unknown".to_string()]) {
+            Ok(_) => panic!("unknown plugin should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("available plugins"));
+    }
+
+    #[test]
+    fn apply_config_args_normalizes_and_updates_expected_fields() {
+        let mut cfg = ThemeConfig::default();
+
+        let changed = apply_config_args(
+            &mut cfg,
+            ConfigUpdate {
+                light: Some("DayFox".to_string()),
+                dark: Some("NightFox".to_string()),
+                light_ghostty: Some("Dawnfox".to_string()),
+                dark_ghostty: None,
+                plugins: Some("nvim,tmux".to_string()),
+                tmux_mode: Some(TmuxModeArg::Statusline),
+                theme_dir: Some(PathBuf::from("~/themes")),
+            },
+        );
+
+        assert!(changed);
+        assert_eq!(cfg.light, "dayfox");
+        assert_eq!(cfg.dark, "nightfox");
+        assert_eq!(cfg.light_ghostty.as_deref(), Some("Dawnfox"));
+        assert_eq!(cfg.plugins, vec!["nvim", "tmux"]);
+        assert_eq!(cfg.tmux_mode, TmuxMode::Statusline);
+        assert!(cfg.theme_dir.is_some());
+    }
 }

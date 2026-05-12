@@ -4,7 +4,10 @@ use std::fs;
 use anyhow::Result;
 use std::path::Path;
 
-use luma_core::{AppId, LumaPlugin, Platform, SyncContext, TerminalEditor, write_if_changed};
+use luma_core::{
+    AppId, LumaPlugin, Platform, SyncContext, TerminalEditor, primary_app_config_file,
+    read_optional_text, write_if_changed,
+};
 
 const NVIM_LUMA_LUA: &str = include_str!("nvim-luma.lua");
 
@@ -40,24 +43,15 @@ fn write_nvim_state(ctx: &SyncContext) -> Result<()> {
 }
 
 pub fn install_nvim_integration(platform: &dyn Platform) -> Result<()> {
-    let luma_lua = platform
-        .app_config_files(AppId::Nvim, Path::new("lua/luma.lua"))?
-        .into_iter()
-        .next()
-        .expect("nvim config path exists");
+    let luma_lua = primary_app_config_file(platform, AppId::Nvim, Path::new("lua/luma.lua"))?;
     if let Some(parent) = luma_lua.parent() {
         fs::create_dir_all(parent)?;
     }
     write_if_changed(&luma_lua, NVIM_LUMA_LUA)?;
 
-    let polish = platform
-        .app_config_files(AppId::Nvim, Path::new("lua/polish.lua"))?
-        .into_iter()
-        .next()
-        .expect("nvim polish path exists");
+    let polish = primary_app_config_file(platform, AppId::Nvim, Path::new("lua/polish.lua"))?;
     let require_line = "pcall(require, \"luma\")";
-    if polish.exists() {
-        let text = fs::read_to_string(&polish)?;
+    if let Some(text) = read_optional_text(&polish)? {
         if text.contains(require_line) {
             return Ok(());
         }
@@ -78,4 +72,42 @@ pub fn install_nvim_integration(platform: &dyn Platform) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luma_core::OsKind;
+
+    struct EmptyPlatform;
+
+    impl Platform for EmptyPlatform {
+        fn os_kind(&self) -> OsKind {
+            OsKind::Unknown
+        }
+
+        fn home_dir(&self) -> Result<std::path::PathBuf> {
+            Ok(std::path::PathBuf::new())
+        }
+
+        fn app_config_files(
+            &self,
+            _app: AppId,
+            _relative: &Path,
+        ) -> Result<Vec<std::path::PathBuf>> {
+            Ok(Vec::new())
+        }
+
+        fn app_cache_file(&self, _app: AppId, relative: &Path) -> Result<std::path::PathBuf> {
+            Ok(relative.to_path_buf())
+        }
+    }
+
+    #[test]
+    fn install_nvim_integration_returns_error_when_platform_has_no_config_path() {
+        let err = install_nvim_integration(&EmptyPlatform)
+            .expect_err("empty platform paths should be an error, not a panic");
+
+        assert!(err.to_string().contains("returned no config file"));
+    }
 }
